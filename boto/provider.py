@@ -39,6 +39,7 @@ from boto.gs.acl import ACL
 from boto.gs.acl import CannedACLStrings as CannedGSACLStrings
 from boto.s3.acl import CannedACLStrings as CannedS3ACLStrings
 from boto.s3.acl import Policy
+import boto3
 
 
 HEADER_PREFIX_KEY = 'header_prefix'
@@ -215,9 +216,10 @@ class Provider(object):
         if config.has_option('Credentials', host_header_opt_name):
             self.host_header = config.get('Credentials', host_header_opt_name)
 
+        self._session = boto3.Session()
+
     def get_access_key(self):
-        if self._credentials_need_refresh():
-            self._populate_keys_from_metadata_server()
+        self._access_key = self._session.get_credentials.access_key
         return self._access_key
 
     def set_access_key(self, value):
@@ -226,8 +228,7 @@ class Provider(object):
     access_key = property(get_access_key, set_access_key)
 
     def get_secret_key(self):
-        if self._credentials_need_refresh():
-            self._populate_keys_from_metadata_server()
+        self._secret_key = self._session.get_credentials.secret_key
         return self._secret_key
 
     def set_secret_key(self, value):
@@ -236,8 +237,7 @@ class Provider(object):
     secret_key = property(get_secret_key, set_secret_key)
 
     def get_security_token(self):
-        if self._credentials_need_refresh():
-            self._populate_keys_from_metadata_server()
+        self._security_token = self._session.get_credentials.token
         return self._security_token
 
     def set_security_token(self, value):
