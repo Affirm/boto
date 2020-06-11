@@ -28,6 +28,7 @@ This class encapsulates the provider-specific header differences.
 
 import os
 from boto.compat import six
+import copy
 from datetime import datetime
 
 import boto
@@ -39,6 +40,8 @@ from boto.gs.acl import ACL
 from boto.gs.acl import CannedACLStrings as CannedGSACLStrings
 from boto.s3.acl import CannedACLStrings as CannedS3ACLStrings
 from boto.s3.acl import Policy
+import boto3
+from botocore.exceptions import ProfileNotFound
 
 
 HEADER_PREFIX_KEY = 'header_prefix'
@@ -180,14 +183,24 @@ class Provider(object):
         }
     }
 
+    def __getstate__(self):
+        pickled_dict = copy.copy(self.__dict__)
+        del pickled_dict['_session']
+        return pickled_dict
+
+    def __setstate__(self, dct):
+        self.__dict__ = dct
+        self._session = None
+
     def __init__(self, name, access_key=None, secret_key=None,
                  security_token=None, profile_name=None):
         self.host = None
         self.port = None
         self.host_header = None
-        self.access_key = access_key
-        self.secret_key = secret_key
-        self.security_token = security_token
+
+        self._access_key = access_key
+        self._secret_key = secret_key
+        self._security_token = security_token
         self.profile_name = profile_name
         self.name = name
         self.acl_class = self.AclClassMap[self.name]
@@ -215,35 +228,72 @@ class Provider(object):
         if config.has_option('Credentials', host_header_opt_name):
             self.host_header = config.get('Credentials', host_header_opt_name)
 
+        # Initially, since boto does a lazy load.
+        self._session = None
+
+    @property
+    def session(self):
+        if not self._session:
+            if not os.environ.get('AWS_METADATA_SERVICE_TIMEOUT', None):
+                # in boto3 this is a string
+                os.environ['AWS_METADATA_SERVICE_TIMEOUT'] = str(int(round(config.getfloat('Boto', 'metadata_service_timeout', 1.0))))
+            if not os.environ.get('AWS_METADATA_SERVICE_NUM_ATTEMPTS', None):
+                os.environ['AWS_METADATA_SERVICE_NUM_ATTEMPTS'] = str(config.getint('Boto', 'metadata_service_num_attempts', 1))
+            access_key = None if self._access_key == NO_CREDENTIALS_PROVIDED else self._access_key
+            secret_key = None if self._secret_key == NO_CREDENTIALS_PROVIDED else self._secret_key
+            self._session = boto3.Session(
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                aws_session_token=None if self._security_token == NO_CREDENTIALS_PROVIDED else self._security_token,
+                profile_name=None if self.profile_name == NO_CREDENTIALS_PROVIDED else self.profile_name,
+
+            )
+        return self._session
+
+    @property
+    def access_key(self):
+        access_key = self._access_key
+        try:
+            creds = self.session.get_credentials()
+        except ProfileNotFound:
+            boto.log.exception('Profile not found')
+            creds = None
+        if creds:
+            access_key = creds.access_key
+        return access_key
+
     def get_access_key(self):
-        if self._credentials_need_refresh():
-            self._populate_keys_from_metadata_server()
-        return self._access_key
+        return self.access_key
 
-    def set_access_key(self, value):
-        self._access_key = value
-
-    access_key = property(get_access_key, set_access_key)
+    @property
+    def secret_key(self):
+        secret_key = self._secret_key
+        try:
+            creds = self.session.get_credentials()
+        except ProfileNotFound:
+            boto.log.exception('Profile not found')
+            creds = None
+        if creds:
+            secret_key = creds.secret_key
+        return secret_key
 
     def get_secret_key(self):
-        if self._credentials_need_refresh():
-            self._populate_keys_from_metadata_server()
-        return self._secret_key
+        return self.secret_key
 
-    def set_secret_key(self, value):
-        self._secret_key = value
-
-    secret_key = property(get_secret_key, set_secret_key)
+    @property
+    def security_token(self):
+        security_token = self._security_token
+        try:
+            creds = self.session.get_credentials()
+        except ProfileNotFound:
+            boto.log.exception('Profile not found')
+            creds = None
+        if creds:
+            security_token = creds.token
+        return security_token
 
     def get_security_token(self):
-        if self._credentials_need_refresh():
-            self._populate_keys_from_metadata_server()
-        return self._security_token
-
-    def set_security_token(self, value):
-        self._security_token = value
-
-    security_token = property(get_security_token, set_security_token)
+        return self.security_token
 
     def _credentials_need_refresh(self):
         if self._credential_expiry_time is None:
@@ -278,19 +328,19 @@ class Provider(object):
         shared = self.shared_credentials
 
         if access_key is not None:
-            self.access_key = access_key
+            self._access_key = access_key
             boto.log.debug("Using access key provided by client.")
         elif access_key_name.upper() in os.environ:
-            self.access_key = os.environ[access_key_name.upper()]
+            self._access_key = os.environ[access_key_name.upper()]
             boto.log.debug("Using access key found in environment variable.")
         elif profile_name is not None:
             if shared.has_option(profile_name, access_key_name):
-                self.access_key = shared.get(profile_name, access_key_name)
+                self._access_key = shared.get(profile_name, access_key_name)
                 boto.log.debug("Using access key found in shared credential "
                                "file for profile %s." % profile_name)
             elif config.has_option("profile %s" % profile_name,
                                    access_key_name):
-                self.access_key = config.get("profile %s" % profile_name,
+                self._access_key = config.get("profile %s" % profile_name,
                                              access_key_name)
                 boto.log.debug("Using access key found in config file: "
                                "profile %s." % profile_name)
@@ -298,25 +348,25 @@ class Provider(object):
                 raise ProfileNotFoundError('Profile "%s" not found!' %
                                            profile_name)
         elif shared.has_option('default', access_key_name):
-            self.access_key = shared.get('default', access_key_name)
+            self._access_key = shared.get('default', access_key_name)
             boto.log.debug("Using access key found in shared credential file.")
         elif config.has_option('Credentials', access_key_name):
-            self.access_key = config.get('Credentials', access_key_name)
+            self._access_key = config.get('Credentials', access_key_name)
             boto.log.debug("Using access key found in config file.")
 
         if secret_key is not None:
-            self.secret_key = secret_key
+            self._secret_key = secret_key
             boto.log.debug("Using secret key provided by client.")
         elif secret_key_name.upper() in os.environ:
-            self.secret_key = os.environ[secret_key_name.upper()]
+            self._secret_key = os.environ[secret_key_name.upper()]
             boto.log.debug("Using secret key found in environment variable.")
         elif profile_name is not None:
             if shared.has_option(profile_name, secret_key_name):
-                self.secret_key = shared.get(profile_name, secret_key_name)
+                self._secret_key = shared.get(profile_name, secret_key_name)
                 boto.log.debug("Using secret key found in shared credential "
                                "file for profile %s." % profile_name)
             elif config.has_option("profile %s" % profile_name, secret_key_name):
-                self.secret_key = config.get("profile %s" % profile_name,
+                self._secret_key = config.get("profile %s" % profile_name,
                                              secret_key_name)
                 boto.log.debug("Using secret key found in config file: "
                                "profile %s." % profile_name)
@@ -324,10 +374,10 @@ class Provider(object):
                 raise ProfileNotFoundError('Profile "%s" not found!' %
                                            profile_name)
         elif shared.has_option('default', secret_key_name):
-            self.secret_key = shared.get('default', secret_key_name)
+            self._secret_key = shared.get('default', secret_key_name)
             boto.log.debug("Using secret key found in shared credential file.")
         elif config.has_option('Credentials', secret_key_name):
-            self.secret_key = config.get('Credentials', secret_key_name)
+            self._secret_key = config.get('Credentials', secret_key_name)
             boto.log.debug("Using secret key found in config file.")
         elif config.has_option('Credentials', 'keyring'):
             keyring_name = config.get('Credentials', 'keyring')
@@ -338,12 +388,12 @@ class Provider(object):
                                "For keyring support, install the keyring "
                                "module.")
                 raise
-            self.secret_key = keyring.get_password(
-                keyring_name, self.access_key)
+            self._secret_key = keyring.get_password(
+                keyring_name, self._access_key)
             boto.log.debug("Using secret key found in keyring.")
 
         if security_token is not None:
-            self.security_token = security_token
+            self._security_token = security_token
             boto.log.debug("Using security token provided by client.")
         elif ((security_token_name is not None) and
               (access_key is None) and (secret_key is None)):
@@ -352,12 +402,12 @@ class Provider(object):
             # environment/config token could be paired with a
             # different set of credentials provided by the caller
             if security_token_name.upper() in os.environ:
-                self.security_token = os.environ[security_token_name.upper()]
+                self._security_token = os.environ[security_token_name.upper()]
                 boto.log.debug("Using security token found in environment"
                                " variable.")
             elif shared.has_option(profile_name or 'default',
                                    security_token_name):
-                self.security_token = shared.get(profile_name or 'default',
+                self._security_token = shared.get(profile_name or 'default',
                                                  security_token_name)
                 boto.log.debug("Using security token found in shared "
                                "credential file.")
@@ -365,18 +415,15 @@ class Provider(object):
                 if config.has_option("profile %s" % profile_name,
                                      security_token_name):
                     boto.log.debug("config has option")
-                    self.security_token = config.get("profile %s" % profile_name,
+                    self._security_token = config.get("profile %s" % profile_name,
                                                      security_token_name)
                     boto.log.debug("Using security token found in config file: "
                                    "profile %s." % profile_name)
             elif config.has_option('Credentials', security_token_name):
-                self.security_token = config.get('Credentials',
+                self._security_token = config.get('Credentials',
                                                  security_token_name)
                 boto.log.debug("Using security token found in config file.")
 
-        if ((self._access_key is None or self._secret_key is None) and
-                self.MetadataServiceSupport[self.name]):
-            self._populate_keys_from_metadata_server()
         self._secret_key = self._convert_key_to_str(self._secret_key)
 
     def _populate_keys_from_metadata_server(self):

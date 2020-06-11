@@ -8,3 +8,6 @@ paramiko>=1.10.0
 PyYAML>=3.10
 coverage==3.7.1
 mock==1.0.1
+# minimum version that supports AssumeRoleWithWebIdentity
+# https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts-minimum-sdk.html
+boto3>=1.9.220
