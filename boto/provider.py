@@ -233,15 +233,21 @@ class Provider(object):
 
     @property
     def session(self):
-        access_key = None if self._access_key == NO_CREDENTIALS_PROVIDED else self._access_key
-        secret_key = None if self._secret_key == NO_CREDENTIALS_PROVIDED else self._secret_key
         if not self._session:
+            if not os.environ.get('AWS_METADATA_SERVICE_TIMEOUT', None):
+                # in boto3 this is a string
+                os.environ['AWS_METADATA_SERVICE_TIMEOUT'] = str(int(round(config.getfloat('Boto', 'metadata_service_timeout', 1.0))))
+            if not os.environ.get('AWS_METADATA_SERVICE_NUM_ATTEMPTS', None):
+                os.environ['AWS_METADATA_SERVICE_NUM_ATTEMPTS'] = str(config.getint('Boto', 'metadata_service_num_attempts', 1))
+            access_key = None if self._access_key == NO_CREDENTIALS_PROVIDED else self._access_key
+            secret_key = None if self._secret_key == NO_CREDENTIALS_PROVIDED else self._secret_key
             self._session = boto3.Session(
                 aws_access_key_id=access_key,
                 aws_secret_access_key=secret_key,
                 aws_session_token=None if self._security_token == NO_CREDENTIALS_PROVIDED else self._security_token,
-                profile_name=None if self.profile_name == NO_CREDENTIALS_PROVIDED else self.profile_name
-            ) 
+                profile_name=None if self.profile_name == NO_CREDENTIALS_PROVIDED else self.profile_name,
+
+            )
         return self._session
 
     @property
@@ -256,6 +262,9 @@ class Provider(object):
             access_key = creds.access_key
         return access_key
 
+    def get_access_key(self):
+        return self.access_key
+
     @property
     def secret_key(self):
         secret_key = self._secret_key
@@ -268,6 +277,9 @@ class Provider(object):
             secret_key = creds.secret_key
         return secret_key
 
+    def get_secret_key(self):
+        return self.secret_key
+
     @property
     def security_token(self):
         security_token = self._security_token
@@ -279,6 +291,9 @@ class Provider(object):
         if creds:
             security_token = creds.token
         return security_token
+
+    def get_security_token(self):
+        return self.security_token
 
     def _credentials_need_refresh(self):
         if self._credential_expiry_time is None:
